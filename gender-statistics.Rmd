@@ -1,0 +1,223 @@
+---
+title: "Gender Statistics"
+author: "Yurko Salikov"
+date: '23 серпня 2018 р '
+output:
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Demographic-economic paradox
+
+There is a feature of human populations — rich people get fewer children than the poor ones. Most living species increase reproductive effort in good circumstances (food, climate etc.). So Thomas Malthus in 1798 [proposed](http://www.leeds.ac.uk/library/adopt-a-book/malthus.html) that greater means would lead to the production of more offspring. However, observations show that countries with higher income characterized with lower fertility rates. This situation has been named _demographic-economic paradox_.
+
+This page is by no means an original research about fertility in human societies. Fertility has been a central topic within the discipline of demography, and also achieved interest within sociology, economics, medicine and psychology. This document is an attempt to summarize achieved information in course _[Introduction to R for Journalists](https://journalismcourses.org/course/view.php?id=9)_. Let's try to visualize interesting paradox of human societies.
+
+## Data
+
+[Gender Statistic](https://datacatalog.worldbank.org/dataset/gender-statistics) of The world Bank are used in the analysis. There are more than 500 indicators in the database covering demography, education, health, access to economic opportunities, public life and decision-making, and agency. We will use just a few of them.
+
+World map and country geometries are from Natural Earth package _rnaturalearth_. [OpenStreetMap](http://www.openstreetmap.org/copyright) tiles are used in _leaflet_.
+
+## R code
+
+### Libraries
+```{r libraries, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(gghighlight)
+library(sf)
+library(rnaturalearth)
+library(viridis)
+library(leaflet)
+```
+
+### Importing data
+```{r worldbankdata, message=FALSE}
+world.bank.data <- read.csv("data/Gender_StatsData.csv", fileEncoding = "UTF-8-BOM")
+head(world.bank.data, n=1L)
+```
+
+Map geometries and some world data are loaded with _rnaturalearth_ package.
+```{r geometries, warning=FALSE, message=FALSE}
+worldgeoms <- st_as_sf(countries110) %>% 
+  filter(sovereignt!="Antarctica") %>% #exclude Antarctica
+  select(sovereignt, iso_a3, income_grp, geometry)
+```
+
+### Filtering and tidying data
+Original World Bank database is a wide table. Observations for each Indicator are stored in columns corresponding year. We need to filter some indicators and convert table to tall format. For analysis let's use these indicators:
+
+* Fertility rate, total (births per woman);
+* GDP per capita (Current US$);
+* Birth rate, crude (per 1,000 people);
+* Death rate, crude (per 1,000 people).
+
+I wrought a wrap function for filtering an indicator from database for better readability. Frankly speaking, I do not know is this a standard way to wright pipe functions.
+
+```{r get_indicators, warning=FALSE, message=FALSE}
+# Auxiliary function to extract data 
+get_indicator <- function(data, indicator.name, column.name) {
+  # world.bank.data from Global Env.
+  x <- world.bank.data %>% 
+    filter(Indicator.Name==indicator.name) %>%
+    select(Country.Code, "X1960":"X2016") %>% 
+    gather(key="Year", value=!!column.name, "X1960":"X2016") %>% 
+    na.omit(cols=!!column.name) %>% 
+    mutate(Year=as.numeric(str_sub(Year, 2, -1)))
+  data <- full_join(data, x, by=c("Country.Code", "Year"))
+  
+  data
+}
+
+gender.statistics <- data.frame(Country.Code= character(0), Year= integer(0))
+gender.statistics <- gender.statistics %>% 
+  get_indicator("Fertility rate, total (births per woman)", "Fertility.rate") %>% 
+  get_indicator("GDP per capita (Current US$)", "GDP.per.capita") %>% 
+  get_indicator("Birth rate, crude (per 1,000 people)", "Birth.rate") %>% 
+  get_indicator("Death rate, crude (per 1,000 people)", "Death.rate")
+
+head(gender.statistics)
+```
+
+Join this data with geometries.
+```{r joininggeoms, warning=FALSE, message=FALSE}
+gender.statistics <- left_join(worldgeoms, gender.statistics, by=c("iso_a3"="Country.Code"))
+```
+
+###Various plots
+Following plots show smoothed trends for different income groups. Path of particular country may differ from smoothed line.
+
+```{r BRtrends , warning=FALSE, message=FALSE}
+ggplot(gender.statistics) +
+  geom_smooth(aes(x=Year, y=Birth.rate, group=income_grp, colour=income_grp)) +
+  theme_minimal() +
+  scale_y_continuous(breaks=seq(0,50,10), limits=c(0,50)) +
+  labs(x="Year",
+       y="Birth rate (per 1,000 people)",
+       title="Birth Rate trends for income groups",
+       caption='Source: Gender Statistics, The World Bank.')
+```
+
+From 60s all groups have similar decreasing birth rates. However, if we find natural increase rates, low income countries will differ from other groups.
+
+```{r naturalincrease, warning=FALSE, message=FALSE}
+gender.statistics <- mutate(gender.statistics, Natural.Increase=Birth.rate-Death.rate)
+ggplot(gender.statistics) +
+  geom_smooth(aes(x=Year, y=Natural.Increase, group=income_grp, colour=income_grp)) +
+  theme_minimal() +
+  scale_y_continuous(breaks=seq(0,30,10), limits=c(0,30)) +
+  labs(x="Year",
+       y="Natural Increase Rate (per 1,000 people)",
+       fill="Income group",
+       title="Natural Increase Rate trends for income groups",
+       caption='Source: Gender Statistics, The World Bank.')
+```
+
+On the other hand, while gross domestic product trend per capita of high income countries increased by orders the one of low income is almost stable.
+```{r GDPtrends, warning=FALSE, message=FALSE}
+## GDP per capita trends for income groups
+ggplot(gender.statistics) +
+  geom_smooth(aes(x=Year, y=GDP.per.capita, group=income_grp, colour=income_grp)) +
+  theme_minimal() +
+  labs(x="Year",
+       y="GDP per capita (Current US$)",
+       fill="Income group",
+       title="GDP per capita trends for income groups",
+       caption='Source: Gender Statistics, The World Bank.')
+```
+
+We may plot a correlation between income and fertility in 2016. Such plots are often in studies concerning fertility and for every year they show similar characteristics. A blue smoothed line is added to emphasize inverse correlation.
+```{r BRvsGDP, warning=FALSE, message=FALSE}
+## Birth Rates vs. GDP per Capita in 2016
+gender.statistics.2016 <- filter(gender.statistics, Year==2016)
+
+ggplot(gender.statistics.2016, aes(x=GDP.per.capita, y=Fertility.rate)) +
+  geom_point(aes(colour=income_grp), size=2) +
+  geom_smooth(se=FALSE) +
+  scale_y_continuous(breaks=seq(0,8,1), limits=c(0,8)) +
+#  gghighlight(max(as.numeric(as.factor(Fertility.rate))), max_highlight = 4L) +
+  theme_minimal() +
+  labs(x="GDP per capita (Current US$)",
+       y="Fertility rate (per woman)",
+       title="Fertility rate and GDP per capita in 2016.",
+       subtitle="Each dot represents a country.",
+       caption='Source: Gender Statistics, The World Bank.')
+```
+
+###Leaflet
+```{r leafletmap, warning=FALSE, message=FALSE}
+pal <- colorNumeric("YlOrRd", domain=gender.statistics.2016$Fertility.rate)
+labels <- paste0("<b>", gender.statistics.2016$sovereignt,"</b><br/>",
+                 "<i>", str_sub(gender.statistics.2016$income_grp, 3, -1), "</i><br/>",
+                 as.character(round(gender.statistics.2016$Fertility.rate, 1))," birth per woman.") %>% 
+          lapply(htmltools::HTML)
+
+leaflet(gender.statistics.2016) %>% 
+  addTiles() %>%   # default OpenStreetMap map tiles
+  addPolygons(fillColor = ~pal(Fertility.rate), 
+              fillOpacity = 0.7, 
+              weight = 1, 
+              smoothFactor = 0.2,
+              color = "white",
+              highlight = highlightOptions(weight = 3,
+                                           color = "green",
+                                           fillOpacity = 1,
+                                           bringToFront = TRUE),
+              label = labels,
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "15px",
+                direction = "auto")
+  ) %>% 
+  addLegend(pal = pal, values = ~Fertility.rate, title = "Birth per woman", position = "bottomleft")
+```
+
+###Choropleth maps
+Bellow is similar choropleth map as in leaflet above, but countries of income group are placed in different facets. Most low income countries with high fertility rates are in Central Africa.
+
+```{r choropletmap, warning=FALSE, message=FALSE}
+ggplot(gender.statistics.2016) +
+#  geom_sf(data=worldgeoms, col="grey", fill=NA) +
+  geom_sf(aes(fill=Fertility.rate)) +
+  coord_sf(crs="+proj=robin") +
+  scale_fill_viridis(option = "magma",
+                     name='Births \nper woman',
+                     direction = -1,
+                     guide = guide_colorbar(
+                       direction = "horizontal",
+                       barheight = 0.5,
+                       barwidth = 10,
+                       draw.ulim = FALSE,
+                       title.position = 'top',
+                       title.hjust = 0.5,
+                       label.hjust = 0.5
+                     )) +
+  theme_minimal() +
+  theme(panel.grid.major = element_line(colour = "transparent"),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank())+
+  theme(legend.position=c(0.75, 0.2), legend.box = "horizontal") +
+  labs(x=NULL,
+       y=NULL,
+       title="Fertility rate (births per woman) in countries by income, 2016",
+       subtitle="Course \"Introduction to R for Journalists\"",
+       caption='Source: Gender Statistics, The World Bank. Map: Natural Earth.') +
+  facet_wrap(~income_grp, ncol=2)
+```
+
+##Causes
+So if people could afford more children why they would they have them? Not trying to cover all specific causes, just mention a few of them:
+
+* Higher gender equality in wealthier countries. Woman are more likely to be independent and not rely on others. A career for them may be more important than bearing children.
+* A tendency to delay union formation and parenthood in developed countries.
+* Urbanization. Size of family in the city does not have significant benefits over one in agricultural area. 
+* High childhood mortality in low income countries leads to high birth rates. Many children may die at a young age so the more children family have the more survive.
+
+In a 1974 United Nations population conference in Bucharest, Karan Singh stated "Development is the best contraceptive".
