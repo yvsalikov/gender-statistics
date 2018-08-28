@@ -184,8 +184,8 @@ Bellow is similar choropleth map as in leaflet above, but countries of income gr
 
 ```{r choropletmap, warning=FALSE, message=FALSE}
 ggplot(gender.statistics.2016) +
-#  geom_sf(data=worldgeoms, col="grey", fill=NA) +
-  geom_sf(aes(fill=Fertility.rate)) +
+  geom_sf(data=select(worldgeoms, -income_grp), col="grey", fill=NA) +
+  geom_sf(col="grey", aes(fill=Fertility.rate)) +
   coord_sf(crs="+proj=robin") +
   scale_fill_viridis(option = "magma",
                      name='Births \nper woman',
